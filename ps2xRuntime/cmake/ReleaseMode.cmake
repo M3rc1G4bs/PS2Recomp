@@ -34,7 +34,7 @@ function(EnableFastReleaseMode TargetName)
         endif()
     endif()
 
-    if(IPO_SUPPORTED)
+    if(IPO_SUPPORTED AND NOT PS2X_IS_VITA AND NOT PS2X_IS_SWITCH)
         set_property(TARGET ${TargetName} PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
     else()
         message(WARNING "Interprocedural optimization not supported: ${ipo_error}")

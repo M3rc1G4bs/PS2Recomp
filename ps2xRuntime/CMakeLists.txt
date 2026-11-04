@@ -47,13 +47,24 @@ if(ANDROID)
     set(PS2X_IS_ANDROID ON)
 endif()
 
+set(PS2X_IS_SWITCH OFF)
+if(NINTENDO_SWITCH OR (CMAKE_SYSTEM_NAME STREQUAL "NintendoSwitch"))
+    set(PS2X_IS_SWITCH ON)
+endif()
+
+if(PS2X_IS_SWITCH AND NOT PS2X_DEFAULT_BOOT_ELF)
+    set(PS2X_DEFAULT_BOOT_ELF "SLUS_212.08" CACHE STRING "Guest ELF path" FORCE)
+endif()
+
 option(PS2X_VITA_CREATE_PACKAGE "Create Vita eboot/vpk targets" ON)
 set(PS2X_VITA_APP_NAME "PS2 Retro X" CACHE STRING "Display name for the Vita bubble")
 set(PS2X_VITA_TITLEID "RANJ00001" CACHE STRING "9-character Vita title id")
 set(PS2X_VITA_VERSION "01.00" CACHE STRING "Vita app version")
 set(PS2X_DEFAULT_BOOT_ELF "" CACHE STRING "Guest ELF path passed directly to main() when argv is unavailable")
 
-if(PS2X_IS_VITA)
+if(PS2X_IS_SWITCH)
+    # Switch uses custom raylib implementation over libnx
+elseif(PS2X_IS_VITA)
     if(NOT DEFINED ENV{VITASDK})
         message(FATAL_ERROR "VITASDK is not defined. Configure inside the VitaSDK environment or pass the Vita toolchain file.")
     endif()
@@ -234,6 +245,13 @@ if(PS2X_IS_VITA)
         c
         pthread
     )
+elseif(PS2X_IS_SWITCH)
+    set(PS2X_SWITCH_INCLUDE_DIRS
+        "${CMAKE_CURRENT_SOURCE_DIR}/switch/include"
+    )
+    target_compile_definitions(ps2_host_backend INTERFACE PLATFORM_SWITCH=1 __SWITCH__=1 NINTENDO_SWITCH=1)
+    target_include_directories(ps2_host_backend INTERFACE ${PS2X_SWITCH_INCLUDE_DIRS})
+    target_link_libraries(ps2_host_backend INTERFACE -lnx -lm)
 else()
     target_link_libraries(ps2_host_backend INTERFACE raylib)
 
@@ -242,7 +260,7 @@ else()
     endif()
 endif()
 
-if(PS2X_IS_ANDROID)
+if(PS2X_IS_ANDROID OR PS2X_IS_SWITCH)
     set(PS2X_ENABLE_FFMPEG_DEFAULT OFF)
 else()
     set(PS2X_ENABLE_FFMPEG_DEFAULT ON)
@@ -512,7 +530,7 @@ target_link_libraries(ps2EntryRunner
     ps2_runtime
 )
 
-if(PS2X_ENABLE_DEBUG_UI AND NOT PS2X_IS_VITA AND NOT PS2X_IS_ANDROID)
+if(PS2X_ENABLE_DEBUG_UI AND NOT PS2X_IS_VITA AND NOT PS2X_IS_ANDROID AND NOT PS2X_IS_SWITCH)
     target_sources(ps2EntryRunner PRIVATE
         src/lib/ps2_debug_panel.cpp
     )
@@ -589,6 +607,15 @@ endif()
 
 if(PS2X_IS_ANDROID)
     target_sources(ps2EntryRunner PRIVATE src/lib/ps2_android_runtime.cpp)
+endif()
+
+if(PS2X_IS_SWITCH)
+    target_link_options(ps2EntryRunner PRIVATE "-Wl,--allow-multiple-definition")
+    target_sources(ps2EntryRunner PRIVATE src/lib/ps2_switch_runtime.cpp)
+    set_source_files_properties(src/lib/ps2_switch_runtime.cpp PROPERTIES
+        SKIP_UNITY_BUILD_INCLUSION TRUE
+    )
+    nx_create_nro(ps2EntryRunner)
 endif()
 
 install(TARGETS ps2_runtime ps2EntryRunner

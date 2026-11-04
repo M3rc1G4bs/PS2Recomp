@@ -42,7 +42,10 @@ static constexpr int FB_HEIGHT = 512;
 static constexpr int DEFAULT_DISPLAY_HEIGHT = 448;
 static constexpr uint32_t DEFAULT_FB_SIZE = FB_WIDTH * FB_HEIGHT * 4;
 static constexpr uint32_t DEFAULT_FB_ADDR = (PS2_RAM_SIZE - DEFAULT_FB_SIZE - 0x10000u);
-#if defined(PLATFORM_VITA)
+#if defined(PLATFORM_SWITCH) || defined(__SWITCH__)
+static constexpr int HOST_WINDOW_WIDTH = 1280;
+static constexpr int HOST_WINDOW_HEIGHT = 720;
+#elif defined(PLATFORM_VITA)
 static constexpr int HOST_WINDOW_WIDTH = 960;
 static constexpr int HOST_WINDOW_HEIGHT = 544;
 #else
@@ -305,7 +308,7 @@ namespace
             return {};
         }
 
-#if defined(PLATFORM_VITA)
+#if defined(PLATFORM_VITA) || defined(PLATFORM_SWITCH) || defined(__SWITCH__)
         const std::string generic = path.generic_string();
         const std::size_t colon = generic.find(':');
         if (colon != std::string::npos && colon != 0u)
@@ -531,7 +534,7 @@ PS2Runtime::~PS2Runtime()
         requestStop();
         m_iopSubsystem.reset();
         m_iopHost.reset();
-#if defined(PLATFORM_VITA)
+#if defined(PLATFORM_VITA) || defined(PLATFORM_SWITCH) || defined(__SWITCH__)
         m_audioBackend.stopAll();
         m_audioBackend.setAudioReady(false);
 #else
@@ -728,8 +731,8 @@ bool PS2Runtime::initialize(const char *title)
             std::cerr << "Failed to bind runtime core subsystems" << std::endl;
             return false;
         }
-#if defined(PLATFORM_VITA)
-        InitWindow(HOST_WINDOW_WIDTH, HOST_WINDOW_HEIGHT, title); // raylib vita does not support audio
+#if defined(PLATFORM_VITA) || defined(PLATFORM_SWITCH) || defined(__SWITCH__)
+        InitWindow(HOST_WINDOW_WIDTH, HOST_WINDOW_HEIGHT, title);
 #else
         SetConfigFlags(FLAG_WINDOW_RESIZABLE);
         InitWindow(HOST_WINDOW_WIDTH, HOST_WINDOW_HEIGHT, title);

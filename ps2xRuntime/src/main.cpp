@@ -150,7 +150,7 @@ namespace
 #if defined(PS2X_DEFAULT_BOOT_ELF)
         std::cout << "Using default boot file" << std::endl;
         const std::filesystem::path configuredPath = std::filesystem::path(PS2X_DEFAULT_BOOT_ELF);
-#if defined(PLATFORM_VITA)
+#if defined(PLATFORM_VITA) || defined(PLATFORM_SWITCH) || defined(__SWITCH__)
         return configuredPath;
 #endif
         if (configuredPath.is_absolute())
@@ -182,7 +182,7 @@ int main(int argc, char *argv[])
         std::string windowTitle = "PS2-Recomp | ";
         const char *gameName = getGameName(normalizedId);
 
-#if !defined(PLATFORM_VITA)
+#if !defined(PLATFORM_VITA) && !defined(PLATFORM_SWITCH) && !defined(__SWITCH__)
         if (gameName)
         {
             windowTitle += std::string(gameName) + " | " + elfName;
@@ -194,7 +194,7 @@ int main(int argc, char *argv[])
         }
 
         PS2Runtime runtime;
-#if defined(PS2X_ENABLE_DEBUG_UI) && !defined(PLATFORM_VITA)
+#if defined(PS2X_ENABLE_DEBUG_UI) && !defined(PLATFORM_VITA) && !defined(PLATFORM_SWITCH) && !defined(__SWITCH__)
         // This hook is to prevent leak rlimgui deps to recompiler etc
         PS2DebugPanel debugPanel;
         runtime.setDebugUiCallbacks(
