@@ -1699,13 +1699,14 @@ namespace ps2recomp
         const std::string name = section->get_name();
         const bool vuText = name == ".vutext" || name.rfind(".vutext.", 0) == 0;
         const bool dvpOverlay = name == ".DVP.overlay" || name.rfind(".DVP.overlay.", 0) == 0;
-        return !vuText && !dvpOverlay;
+        const bool dnas = name == ".dnas" || name.rfind(".dnas.", 0) == 0;
+        return !vuText && !dvpOverlay && !dnas;
     }
 
     bool ElfParser::isDataSection(const ELFIO::section *section) const
     {
         return (section->get_flags() & ELFIO::SHF_ALLOC) != 0 &&
-               !(section->get_flags() & ELFIO::SHF_EXECINSTR);
+               !isExecutableSection(section);
     }
 
     std::vector<Function> ElfParser::extractFunctions() const

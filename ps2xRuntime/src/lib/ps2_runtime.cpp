@@ -503,8 +503,8 @@ PS2Runtime::PS2Runtime()
     m_guestHeapLimit = std::min(kGuestHeapHardLimit, PS2_RAM_SIZE);
     m_guestHeapSuggestedBase = kGuestHeapDefaultBase;
     m_guestHeapConfigured = false;
-    m_asyncCallbackStackFloor = std::min(kGuestHeapHardLimit, PS2_RAM_SIZE);
-    m_asyncCallbackStackTop = PS2_RAM_SIZE;
+    m_asyncCallbackStackFloor = 0x00020000u;
+    m_asyncCallbackStackTop = 0x000F0000u;
 }
 
 void PS2Runtime::setDebugUiCallbacks(DebugUiCallback initCallback,
@@ -971,9 +971,8 @@ bool PS2Runtime::loadELF(const std::string &elfPath)
     }
     {
         std::lock_guard<std::mutex> lock(m_asyncCallbackStackMutex);
-        const uint32_t hardLimit = std::min(kGuestHeapHardLimit, PS2_RAM_SIZE);
-        m_asyncCallbackStackFloor = std::min(std::max(hardLimit, suggestedHeapBase), PS2_RAM_SIZE);
-        m_asyncCallbackStackTop = PS2_RAM_SIZE;
+        m_asyncCallbackStackFloor = 0x00020000u;
+        m_asyncCallbackStackTop = 0x000F0000u;
     }
 
     LoadedModule module;
@@ -2402,15 +2401,28 @@ void PS2Runtime::run()
                 const uint32_t dbgSp = m_debugSp.load(std::memory_order_relaxed);
                 const uint32_t dbgGp = m_debugGp.load(std::memory_order_relaxed);
                 const auto eeSnapshot = m_eeScheduler->snapshot();
+                uint32_t s2Val = 0;
+                uint32_t w_1ffffa0 = 0;
+                if (uint8_t *r = m_memory.getRDRAM())
+                {
+                    w_1ffffa0 = *reinterpret_cast<const uint32_t *>(r + 0x1ffffa0u);
+                }
+                if (R5900Context *curCtx = m_eeScheduler->currentContext())
+                {
+                    s2Val = static_cast<uint32_t>(_mm_extract_epi32(curCtx->r[18], 0));
+                }
 
                 RUNTIME_LOG("[run:tick] tick=" << tick
                                                << " pc=0x" << std::hex << dbgPc
                                                << " ra=0x" << dbgRa
                                                << " sp=0x" << dbgSp
                                                << " gp=0x" << dbgGp
+                                               << " s2=0x" << s2Val
+                                               << " w_1ffffa0=0x" << w_1ffffa0
                                                << " dispfb1=0x" << gs.dispfb1
                                                << " display1=0x" << gs.display1
                                                << std::dec
+                                               << " eeCyc=" << eeSnapshot.eeCycle
                                                << " activeThreads=" << eeSnapshot.threads.size()
                                                << " dma=" << curDma
                                                << " gif=" << curGif

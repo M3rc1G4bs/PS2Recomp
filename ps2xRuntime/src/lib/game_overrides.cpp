@@ -1,9 +1,11 @@
 #include "game_overrides.h"
 #include "ps2_runtime.h"
+#include "ps2_runtime_macros.h"
 #include "ps2_runtime_calls.h"
 #include "ps2_stubs.h"
 #include "ps2_syscalls.h"
 #include "ps2_log.h"
+#include "thaw_merged_overrides.inl"
 #include <algorithm>
 #include <cctype>
 #include <filesystem>
@@ -180,4 +182,21 @@ namespace ps2_game_overrides
             RUNTIME_LOG("[game_overrides] applied " << appliedCount << " matching override(s).");
         }
     }
+
+    namespace
+    {
+        void applyThawOverrides(PS2Runtime &runtime)
+        {
+            // Unstubbed libcdvd functions in SLUS_212.08
+            bindAddressHandler(runtime, 0x00467BA0u, "sceCdSearchFile");
+            bindAddressHandler(runtime, 0x004678A0u, "sceCdSearchFile"); // sceCdLayerSearchFile
+            bindAddressHandler(runtime, 0x00468300u, "sceCdDiskReady");  // sceCdDiskReady_old
+            bindAddressHandler(runtime, 0x004689C8u, "sceCdGetDiskType"); // sceCdGetDiskType2
+
+            // Register all 73 merged function entry points
+            thaw_merged_overrides::registerAll(runtime);
+        }
+    }
+
+    PS2_REGISTER_GAME_OVERRIDE("Tony Hawk's American Wasteland (SLUS_212.08)", "SLUS_212.08", 0u, 0u, applyThawOverrides)
 }

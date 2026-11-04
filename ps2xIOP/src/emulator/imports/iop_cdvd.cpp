@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <limits>
@@ -228,7 +229,22 @@ namespace ps2x::iop::detail
                 return true;
 
             case 6: // sceCdRead
-                if (readSectors(a0, a1, a2))
+            {
+                const bool ok = readSectors(a0, a1, a2);
+                static int cdReadLogCount = 0;
+                if (cdReadLogCount < 64)
+                {
+                    uint32_t w0 = 0, w1 = 0;
+                    if (ok && a1 > 0 && memory.ownsRamRange(a2, 8))
+                    {
+                        w0 = memory.read32(a2);
+                        w1 = memory.read32(a2 + 4);
+                    }
+                    std::fprintf(stderr, "[iop:sceCdRead] lsn=0x%x sectors=0x%x dst=0x%x ok=%d w0=0x%08x w1=0x%08x\n",
+                                 a0, a1, a2, ok ? 1 : 0, w0, w1);
+                    ++cdReadLogCount;
+                }
+                if (ok)
                 {
                     signalCommandComplete();
                     if (callback.address != 0u)
@@ -244,6 +260,7 @@ namespace ps2x::iop::detail
                 else
                     cpu.gpr[2] = 0u;
                 return true;
+            }
 
             case 7: // sceCdSeek
                 currentLsn = a0;
@@ -265,8 +282,21 @@ namespace ps2x::iop::detail
                 return true;
 
             case 10: // sceCdSearchFile
-                cpu.gpr[2] = searchFile(a0, a1) ? 1u : 0u;
+            {
+                const bool ok = searchFile(a0, a1);
+                static int cdSearchLogCount = 0;
+                if (cdSearchLogCount < 64)
+                {
+                    const std::string guestPath = (a1 != 0u) ? memory.readString(a1, 256u) : "";
+                    uint32_t lsn = (ok && a0 != 0u) ? memory.read32(a0) : 0u;
+                    uint32_t size = (ok && a0 != 0u) ? memory.read32(a0 + 4u) : 0u;
+                    std::fprintf(stderr, "[iop:sceCdSearchFile] path=\"%s\" ok=%d lsn=0x%x size=0x%x\n",
+                                 guestPath.c_str(), ok ? 1 : 0, lsn, size);
+                    ++cdSearchLogCount;
+                }
+                cpu.gpr[2] = ok ? 1u : 0u;
                 return true;
+            }
 
             case 11: // sceCdSync
                 cpu.gpr[2] = 0u;
@@ -282,6 +312,12 @@ namespace ps2x::iop::detail
 
             case 28: // sceCdStatus
                 cpu.gpr[2] = kCdvdStatusPause;
+                return true;
+
+            case 39: // sceCdBreak
+                lastError = kCdvdErrorNone;
+                signalCommandComplete();
+                cpu.gpr[2] = 1u;
                 return true;
 
             case 37: // sceCdCallback
@@ -344,6 +380,8 @@ namespace ps2x::iop::detail
                 return true;
 
             default:
+                std::fprintf(stderr, "[iop:cdvdman:UNHANDLED] ordinal=%u a0=0x%x a1=0x%x a2=0x%x a3=0x%x\n",
+                             ordinal, a0, a1, a2, cpu.gpr[7]);
                 return false;
             }
         }

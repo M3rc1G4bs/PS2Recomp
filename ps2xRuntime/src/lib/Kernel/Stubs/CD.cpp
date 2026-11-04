@@ -30,6 +30,206 @@ namespace ps2_stubs
 
         uint32_t g_cdStReadTraceCount = 0u;
         CdStreamTimingState g_cdStreamTiming;
+        std::filesystem::path g_virtualIsoPrepopulatedRoot;
+        bool g_virtualIsoPrepopulated = false;
+
+        std::string virtualIsoName(const std::filesystem::path &path, bool directory)
+        {
+            std::string name = path.filename().string();
+            for (char &character : name)
+            {
+                const unsigned char byte = static_cast<unsigned char>(character);
+                character = byte < 0x80u ? static_cast<char>(std::toupper(byte)) : '_';
+            }
+            if (name.size() > 200u)
+            {
+                name.resize(200u);
+            }
+            if (!directory && name.find(';') == std::string::npos)
+            {
+                name += ";1";
+            }
+            return name;
+        }
+
+        size_t virtualIsoDirectoryRecordSize(size_t identifierSize)
+        {
+            const size_t unpadded = 33u + identifierSize;
+            return unpadded + (unpadded & 1u);
+        }
+
+        uint32_t virtualIsoDirectoryBytesFor(const std::vector<size_t> &identifierSizes)
+        {
+            uint64_t cursor = 0u;
+            for (const size_t identifierSize : identifierSizes)
+            {
+                const uint64_t recordSize = virtualIsoDirectoryRecordSize(identifierSize);
+                const uint64_t sectorOffset = cursor % kCdSectorSize;
+                if (sectorOffset + recordSize > kCdSectorSize)
+                {
+                    cursor += kCdSectorSize - sectorOffset;
+                }
+                cursor += recordSize;
+            }
+            const uint32_t alignedSectors = static_cast<uint32_t>((cursor + kCdSectorSize - 1u) / kCdSectorSize);
+            return std::max<uint32_t>(kCdSectorSize, alignedSectors * kCdSectorSize);
+        }
+
+        struct VirtualIsoPrepopNode
+        {
+            std::filesystem::path hostPath;
+            std::string identifier;
+            size_t parent = 0u;
+            bool directory = false;
+            uint32_t lsn = 0u;
+            uint32_t size = 0u;
+            uint32_t sectors = 0u;
+            std::vector<size_t> children;
+        };
+
+        bool addVirtualIsoDirectory(std::vector<VirtualIsoPrepopNode> &nodes, size_t parent, const std::filesystem::path &path)
+        {
+            std::error_code error;
+            std::vector<std::filesystem::directory_entry> entries;
+            for (std::filesystem::directory_iterator iterator(path, std::filesystem::directory_options::skip_permission_denied, error), end;
+                 !error && iterator != end;
+                 iterator.increment(error))
+            {
+                const std::filesystem::directory_entry &entry = *iterator;
+                if (entry.is_symlink(error))
+                {
+                    error.clear();
+                    continue;
+                }
+                error.clear();
+                if (entry.is_directory(error) || entry.is_regular_file(error))
+                {
+                    entries.push_back(entry);
+                }
+                error.clear();
+            }
+
+            std::sort(entries.begin(), entries.end(),
+                      [](const auto &lhs, const auto &rhs)
+                      {
+                          return virtualIsoName(lhs.path(), lhs.is_directory()) < virtualIsoName(rhs.path(), rhs.is_directory());
+                      });
+
+            for (const auto &entry : entries)
+            {
+                error.clear();
+                const bool directory = entry.is_directory(error);
+                if (error)
+                {
+                    continue;
+                }
+                VirtualIsoPrepopNode node;
+                node.hostPath = entry.path();
+                node.identifier = virtualIsoName(entry.path(), directory);
+                node.parent = parent;
+                node.directory = directory;
+                if (!directory)
+                {
+                    const uint64_t fileSize = entry.file_size(error);
+                    if (error)
+                    {
+                        continue;
+                    }
+                    node.size = static_cast<uint32_t>(std::min<uint64_t>(fileSize, std::numeric_limits<uint32_t>::max()));
+                }
+                const size_t index = nodes.size();
+                nodes.push_back(std::move(node));
+                nodes[parent].children.push_back(index);
+                if (directory && !addVirtualIsoDirectory(nodes, index, entry.path()))
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        void ensureVirtualIsoPrepopulated()
+        {
+            const std::filesystem::path rootPath = getCdRootPath();
+            if (g_virtualIsoPrepopulated && g_virtualIsoPrepopulatedRoot == rootPath)
+            {
+                return;
+            }
+            g_virtualIsoPrepopulatedRoot = rootPath;
+            g_virtualIsoPrepopulated = true;
+
+            std::error_code error;
+            if (rootPath.empty() || !std::filesystem::is_directory(rootPath, error) || error)
+            {
+                return;
+            }
+
+            std::vector<VirtualIsoPrepopNode> nodes;
+            VirtualIsoPrepopNode root;
+            root.hostPath = rootPath;
+            root.identifier.clear();
+            root.parent = 0u;
+            root.directory = true;
+            nodes.push_back(std::move(root));
+            if (!addVirtualIsoDirectory(nodes, 0u, rootPath))
+            {
+                return;
+            }
+
+            for (VirtualIsoPrepopNode &node : nodes)
+            {
+                if (!node.directory)
+                {
+                    continue;
+                }
+                std::vector<size_t> identifierSizes = {1u, 1u};
+                identifierSizes.reserve(node.children.size() + 2u);
+                for (const size_t child : node.children)
+                {
+                    identifierSizes.push_back(nodes[child].identifier.size());
+                }
+                node.size = virtualIsoDirectoryBytesFor(identifierSizes);
+                node.sectors = node.size / kCdSectorSize;
+            }
+
+            constexpr uint32_t kFirstDirectoryLsn = 20u;
+            uint32_t cursor = kFirstDirectoryLsn;
+            for (VirtualIsoPrepopNode &node : nodes)
+            {
+                if (!node.directory)
+                {
+                    continue;
+                }
+                node.lsn = cursor;
+                cursor += node.sectors;
+            }
+            for (VirtualIsoPrepopNode &node : nodes)
+            {
+                if (node.directory)
+                {
+                    continue;
+                }
+                node.lsn = cursor;
+                node.sectors = static_cast<uint32_t>((static_cast<uint64_t>(node.size) + kCdSectorSize - 1u) / kCdSectorSize);
+                cursor += node.sectors;
+
+                std::error_code relError;
+                const std::filesystem::path rel = std::filesystem::relative(node.hostPath, rootPath, relError);
+                if (!relError)
+                {
+                    const std::string key = cdPathKey(rel.generic_string());
+                    if (!key.empty())
+                    {
+                        CdFileEntry cdEntry;
+                        cdEntry.hostPath = node.hostPath;
+                        cdEntry.sizeBytes = node.size;
+                        cdEntry.baseLbn = node.lsn;
+                        cdEntry.sectors = node.sectors > 0u ? node.sectors : 1u;
+                        g_cdFilesByKey[key] = cdEntry;
+                    }
+                }
+            }
+        }
 
         uint64_t currentCdStreamTick(PS2Runtime *runtime)
         {
@@ -206,6 +406,7 @@ namespace ps2_stubs
 
     void sceCdRead(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
+        ensureVirtualIsoPrepopulated();
         const uint32_t a0 = getRegU32(ctx, 4); // usually lbn
         const uint32_t a1 = getRegU32(ctx, 5); // usually sector count
         const uint32_t a2 = getRegU32(ctx, 6); // usually destination buffer
@@ -396,6 +597,7 @@ namespace ps2_stubs
 
     void sceCdInit(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
+        ensureVirtualIsoPrepopulated();
         g_cdInitialized = true;
         g_lastCdError = 0;
         g_cdStreamTiming = {};
@@ -467,6 +669,7 @@ namespace ps2_stubs
 
     void sceCdReadChain(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
+        ensureVirtualIsoPrepopulated();
         uint32_t chainAddr = getRegU32(ctx, 4);
         bool ok = true;
 
@@ -544,6 +747,7 @@ namespace ps2_stubs
 
     void sceCdSearchFile(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
+        ensureVirtualIsoPrepopulated();
         uint32_t fileAddr = getRegU32(ctx, 4);
         uint32_t pathAddr = getRegU32(ctx, 5);
         const std::string path = readPs2CStringBounded(rdram, pathAddr, 260);

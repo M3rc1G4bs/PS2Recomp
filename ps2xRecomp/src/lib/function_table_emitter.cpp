@@ -158,14 +158,23 @@ namespace ps2recomp
         ss << "PS2Runtime::RecompiledFunction g_ps2RecompiledFunctionTable[" << std::dec << (slotCount == 0u ? 1u : slotCount) << "u] = {};\n\n";
 
         ss << "namespace {\n";
-        ss << "struct GeneratedFunctionTableInitializer {\n";
-        ss << "    GeneratedFunctionTableInitializer() {\n";
+        ss << "struct FunctionSlotEntry {\n";
+        ss << "    uint32_t slot;\n";
+        ss << "    PS2Runtime::RecompiledFunction fn;\n";
+        ss << "};\n";
+        ss << "static const FunctionSlotEntry kFunctionSlotEntries[] = {\n";
         for (const auto &[address, name] : entries)
         {
             const uint32_t slot = (address - tableBase) >> 2;
-            ss << "        g_ps2RecompiledFunctionTable[" << std::dec << slot << "] = " << name
-               << "; // 0x" << std::hex << address << std::dec << "\n";
+            ss << "    { " << std::dec << slot << "u, " << name
+               << " }, // 0x" << std::hex << address << std::dec << "\n";
         }
+        ss << "};\n";
+        ss << "struct GeneratedFunctionTableInitializer {\n";
+        ss << "    GeneratedFunctionTableInitializer() {\n";
+        ss << "        for (const auto &entry : kFunctionSlotEntries) {\n";
+        ss << "            g_ps2RecompiledFunctionTable[entry.slot] = entry.fn;\n";
+        ss << "        }\n";
         ss << "    }\n";
         ss << "};\n";
         ss << "static const GeneratedFunctionTableInitializer g_generatedFunctionTableInitializer;\n";

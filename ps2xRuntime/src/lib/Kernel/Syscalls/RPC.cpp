@@ -974,26 +974,82 @@ namespace ps2_syscalls
         uint32_t packetAddr = getRegU32(ctx, 5);
         uint32_t packetSize = getRegU32(ctx, 6);
         uint32_t srcExtra = getRegU32(ctx, 7);
-
-        uint32_t sp = getRegU32(ctx, 29);
-        uint32_t destExtra = 0;
-        uint32_t sizeExtra = 0;
-        readStackU32(rdram, sp, 0x10, destExtra);
-        readStackU32(rdram, sp, 0x14, sizeExtra);
+        uint32_t destExtra = getRegU32(ctx, 8);
+        uint32_t sizeExtra = getRegU32(ctx, 9);
 
         if (sizeExtra > 0 && srcExtra && destExtra)
         {
-            rpcCopyToRdram(rdram, destExtra, srcExtra, sizeExtra);
+            if (runtime && runtime->isIopMemoryRange(destExtra, sizeExtra))
+            {
+                std::vector<uint8_t> payload(sizeExtra);
+                bool valid = true;
+                for (uint32_t i = 0; i < sizeExtra; ++i)
+                {
+                    const uint8_t *src = getConstMemPtr(rdram, srcExtra + i);
+                    if (!src)
+                    {
+                        valid = false;
+                        break;
+                    }
+                    payload[i] = *src;
+                }
+                if (valid)
+                {
+                    (void)runtime->writeIopMemory(destExtra, payload.data(), payload.size());
+                }
+            }
+            else
+            {
+                rpcCopyToRdram(rdram, destExtra, srcExtra, sizeExtra);
+            }
         }
 
         static int logCount = 0;
-        if (logCount < 5)
+        if (logCount < 64)
         {
+            const uint8_t *pkt = getConstMemPtr(rdram, packetAddr);
+            uint32_t cmd = 0, reqId = 0, w10 = 0, w14 = 0, w18 = 0, w1C = 0, w20 = 0;
+            uint8_t b6A = 0;
+            if (pkt && packetSize >= 0x70)
+            {
+                std::memcpy(&reqId, pkt + 0x0C, 4);
+                std::memcpy(&w10, pkt + 0x10, 4);
+                std::memcpy(&w14, pkt + 0x14, 4);
+                std::memcpy(&w18, pkt + 0x18, 4);
+                std::memcpy(&w1C, pkt + 0x1C, 4);
+                std::memcpy(&w20, pkt + 0x20, 4);
+                std::memcpy(&cmd, pkt + 0x6C, 4);
+                b6A = pkt[0x6A];
+            }
             RUNTIME_LOG("[sceSifSendCmd] cid=0x" << std::hex << cid
                                                  << " packet=0x" << packetAddr
                                                  << " psize=0x" << packetSize
-                                                 << " extra=0x" << destExtra << std::dec << std::endl);
+                                                 << " cmd=0x" << cmd
+                                                 << " reqId=0x" << reqId
+                                                 << " w10=0x" << w10
+                                                 << " w14=0x" << w14
+                                                 << " w18=0x" << w18
+                                                 << " w1C=0x" << w1C
+                                                 << " w20=0x" << w20
+                                                 << " b6A=0x" << static_cast<uint32_t>(b6A)
+                                                 << std::dec);
+            if (pkt && packetSize >= 0x70 && cmd == 1 && b6A != 0)
+            {
+                RUNTIME_LOG(" name=\"" << reinterpret_cast<const char *>(pkt + 0x18) << "\"");
+            }
+            RUNTIME_LOG(std::endl);
             ++logCount;
+        }
+
+        if (runtime && packetAddr != 0u && packetSize >= 16u)
+        {
+            PS2IopTransport::notifyTransfer(runtime, rdram, {
+                static_cast<ps2x::iop::SifTransferKind>(0x53494643u),
+                ps2x::iop::SifTransferPhase::AfterCopy,
+                packetAddr,
+                cid,
+                packetSize,
+            });
         }
 
         // Return non-zero on success.

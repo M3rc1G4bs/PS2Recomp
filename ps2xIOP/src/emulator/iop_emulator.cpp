@@ -105,7 +105,7 @@ namespace ps2x::iop::detail
               heaplib(memory),
               intrman(memory),
               timrman(),
-              ioman(memory),
+              ioman(host, memory),
               cpuCore(memory),
               imports(memory),
               loadcore(memory, imports)
@@ -312,6 +312,17 @@ namespace ps2x::iop::detail
             {
                 checkKelfPathCallback = {a0, cpu.gpr[28]};
                 setV0(0);
+                return ImportDisposition::Handled;
+            }
+            if (iequals(call.library, "modload") && call.ordinal == 28u) // AllocateIoMemory
+            {
+                const uint32_t addr = memory.allocate(a0, 16u);
+                setV0(addr);
+                return ImportDisposition::Handled;
+            }
+            if (iequals(call.library, "modload") && call.ordinal == 29u) // FreeIoMemory
+            {
+                setV0(memory.freeAllocation(a0) ? 0u : 0xFFFFFFFFu);
                 return ImportDisposition::Handled;
             }
             if (iequals(call.library, "ioman") && ioman.dispatchImport(call.ordinal, cpu, *this))
@@ -627,6 +638,7 @@ namespace ps2x::iop::detail
             const uint32_t startResult = callFunction(module.entry, argumentSize, args, 0u, 0u, module.gp);
             if (args)
                 freeAllocation(args);
+            runCycles(64000u);
             module.resident = startResult == 0u || startResult == 2u;
             result.moduleId = module.id;
             result.startResult = static_cast<int32_t>(startResult);
@@ -760,6 +772,14 @@ namespace ps2x::iop::detail
 
     void IopEmulator::onSifTransfer(const SifTransfer &transfer)
     {
+        if (static_cast<uint32_t>(transfer.kind) == 0x53494643u)
+        {
+            if (m_impl->rpc.handleSifCommand(transfer.destinationAddress, transfer.sourceAddress, transfer.size, *m_impl))
+            {
+                m_impl->runCycles(2000000u);
+            }
+            return;
+        }
         m_impl->rpc.onSifTransfer(transfer);
     }
 

@@ -531,6 +531,26 @@ namespace ps2_syscalls
         }
 
         scheduler.setupCurrentThread(initialStack, stackSize, getRegU32(ctx, 28));
+
+        const uint32_t argsAddr = getRegU32(ctx, 7);
+        if (argsAddr != 0u && rdram != nullptr)
+        {
+            std::string elfName = PS2Runtime::getIoPaths().elfPath.filename().string();
+            if (elfName.empty())
+            {
+                elfName = "SLUS_212.08";
+            }
+            const std::string bootArg = "cdrom0:\\" + elfName + ";1";
+            const uint32_t argv0Addr = argsAddr + 8u;
+            const uint32_t argc = 1u;
+            if (uint8_t *argsPtr = getMemPtr(rdram, argsAddr))
+            {
+                std::memcpy(argsPtr + 0u, &argc, sizeof(argc));
+                std::memcpy(argsPtr + 4u, &argv0Addr, sizeof(argv0Addr));
+                std::memcpy(argsPtr + 8u, bootArg.c_str(), bootArg.size() + 1u);
+            }
+        }
+
         setReturnU32(ctx, sp);
     }
 

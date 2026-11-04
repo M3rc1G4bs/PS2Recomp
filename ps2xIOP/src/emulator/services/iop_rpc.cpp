@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdio>
 #include <cstring>
 #include <limits>
 #include <vector>
@@ -21,8 +22,14 @@ namespace ps2x::iop::detail
     void IopRpcBridge::reset()
     {
         m_servers.clear();
+        m_cmdHandlers.clear();
+        m_cmdBuffer = 0u;
+        m_cmdBufferSize = 0u;
+        m_sysCmdBuffer = 0u;
+        m_sysCmdBufferSize = 0u;
+        m_rxPacketBuffer = 0u;
         m_nextDmaId = 1u;
-        m_sifInitialized = false;
+        m_sifInitialized = true;
     }
 
     bool IopRpcBridge::dispatchSifManImport(uint16_t ordinal, IopCpuState &cpu)
@@ -73,12 +80,21 @@ namespace ps2x::iop::detail
                 const uint32_t source = descriptorWords[i * 4u + 0u];
                 const uint32_t destination = descriptorWords[i * 4u + 1u];
                 const int32_t signedSize = static_cast<int32_t>(descriptorWords[i * 4u + 2u]);
+                const uint32_t attr = descriptorWords[i * 4u + 3u];
+                static int dmaLogCount = 0;
+                if (dmaLogCount < 64)
+                {
+                    std::fprintf(stderr, "[iop:sceSifSetDma] idx=%u/%u src=0x%x dst=0x%x size=%d attr=0x%x\n",
+                                 i, descriptorCount, source, destination, signedSize, attr);
+                    ++dmaLogCount;
+                }
                 if (signedSize <= 0)
                     continue;
 
                 const uint32_t size = static_cast<uint32_t>(signedSize);
                 if (!m_memory.ownsRamRange(source, size))
                 {
+                    std::fprintf(stderr, "[iop:sceSifSetDma:FAIL] ownsRamRange failed src=0x%x size=0x%x\n", source, size);
                     setV0(0u);
                     return true;
                 }
@@ -96,6 +112,7 @@ namespace ps2x::iop::detail
                 const PendingTransfer &transfer = pending[i];
                 if (!m_host.readGuest(transfer.destination, scratch.data(), transfer.size))
                 {
+                    std::fprintf(stderr, "[iop:sceSifSetDma:FAIL] readGuest failed dst=0x%x size=0x%x\n", transfer.destination, transfer.size);
                     setV0(0u);
                     return true;
                 }
@@ -106,8 +123,21 @@ namespace ps2x::iop::detail
                 const PendingTransfer &transfer = pending[i];
                 if (!m_memory.readRam(transfer.source, scratch.data(), transfer.size) || !m_host.writeGuest(transfer.destination, scratch.data(), transfer.size))
                 {
+                    std::fprintf(stderr, "[iop:sceSifSetDma:FAIL] writeGuest failed src=0x%x dst=0x%x size=0x%x\n", transfer.source, transfer.destination, transfer.size);
                     setV0(0u);
                     return true;
+                }
+                static int dmaDataLogCount = 0;
+                if (dmaDataLogCount < 64 && transfer.size >= 16u)
+                {
+                    uint32_t w0 = 0, w1 = 0, w2 = 0, w3 = 0;
+                    std::memcpy(&w0, scratch.data() + 0, 4);
+                    std::memcpy(&w1, scratch.data() + 4, 4);
+                    std::memcpy(&w2, scratch.data() + 8, 4);
+                    std::memcpy(&w3, scratch.data() + 12, 4);
+                    std::fprintf(stderr, "[iop:sceSifSetDma:OK] dst=0x%x size=0x%x w0=0x%08x w1=0x%08x w2=0x%08x w3=0x%08x\n",
+                                 transfer.destination, transfer.size, w0, w1, w2, w3);
+                    ++dmaDataLogCount;
                 }
             }
 
@@ -126,6 +156,8 @@ namespace ps2x::iop::detail
             setV0(m_sifInitialized ? 1u : 0u);
             return true;
         default:
+            std::fprintf(stderr, "[iop:sifman:UNHANDLED] ordinal=%u a0=0x%x a1=0x%x a2=0x%x a3=0x%x\n",
+                         ordinal, cpu.gpr[4], cpu.gpr[5], cpu.gpr[6], cpu.gpr[7]);
             setV0(0u);
             return true;
         }
@@ -143,10 +175,54 @@ namespace ps2x::iop::detail
         case 5:
         case 6:
         case 7:
-        case 8:
-        case 9:
-        case 10:
-        case 11:
+            setV0(0);
+            return true;
+        case 8: // sceSifSetCmdBuffer
+        {
+            const uint32_t prev = m_cmdBuffer;
+            m_cmdBuffer = cpu.gpr[4];
+            m_cmdBufferSize = cpu.gpr[5];
+            setV0(prev);
+            return true;
+        }
+        case 9: // sceSifSetSysCmdBuffer
+        {
+            const uint32_t prev = m_sysCmdBuffer;
+            m_sysCmdBuffer = cpu.gpr[4];
+            m_sysCmdBufferSize = cpu.gpr[5];
+            setV0(prev);
+            return true;
+        }
+        case 10: // sceSifAddCmdHandler
+        {
+            const uint32_t cid = cpu.gpr[4];
+            const uint32_t handler = cpu.gpr[5];
+            const uint32_t data = cpu.gpr[6];
+            m_cmdHandlers[cid] = SifCmdHandler{handler, data, cpu.gpr[28]};
+            if ((cid & 0x80000000u) != 0u)
+            {
+                const uint32_t idx = cid & 0x7FFFFFFFu;
+                if (m_sysCmdBuffer != 0u && idx < m_sysCmdBufferSize)
+                {
+                    m_memory.write32(m_sysCmdBuffer + idx * 8u, handler);
+                    m_memory.write32(m_sysCmdBuffer + idx * 8u + 4u, data);
+                }
+            }
+            else if (m_cmdBuffer != 0u && cid < m_cmdBufferSize)
+            {
+                m_memory.write32(m_cmdBuffer + cid * 8u, handler);
+                m_memory.write32(m_cmdBuffer + cid * 8u + 4u, data);
+            }
+            setV0(0);
+            return true;
+        }
+        case 11: // sceSifRemoveCmdHandler
+        {
+            const uint32_t cid = cpu.gpr[4];
+            m_cmdHandlers.erase(cid);
+            setV0(0);
+            return true;
+        }
         case 14: // InitRpc
         case 15:
         case 16:
@@ -196,6 +272,22 @@ namespace ps2x::iop::detail
             std::memcpy(packet.data() + 0u, &sizeWord, sizeof(sizeWord));
             std::memcpy(packet.data() + 4u, &extraDestination, sizeof(extraDestination));
             std::memcpy(packet.data() + 8u, &commandId, sizeof(commandId));
+
+            static int iopCmdLogCount = 0;
+            uint32_t reqId = 0, w10 = 0, w14 = 0, w18 = 0;
+            if (packetSize >= 0x1Cu)
+            {
+                std::memcpy(&reqId, packet.data() + 0x0Cu, 4);
+                std::memcpy(&w10, packet.data() + 0x10u, 4);
+                std::memcpy(&w14, packet.data() + 0x14u, 4);
+                std::memcpy(&w18, packet.data() + 0x18u, 4);
+            }
+            if (iopCmdLogCount < 32 || (w14 != 0u && iopCmdLogCount < 256))
+            {
+                std::fprintf(stderr, "[iop:sceSifSendCmd] cid=0x%x psize=0x%x extraSrc=0x%x extraDst=0x%x extraSize=0x%x reqId=0x%x w10=0x%x w14=0x%x w18=0x%x\n",
+                             commandId, packetSize, extraSource, extraDestination, extraSize, reqId, w10, w14, w18);
+                ++iopCmdLogCount;
+            }
 
             if (!m_host.sendSifCommand(commandId, packet.data(), packetSize))
             {
@@ -320,6 +412,56 @@ namespace ps2x::iop::detail
         return result;
     }
 
+    bool IopRpcBridge::handleSifCommand(uint32_t cid, uint32_t guestPacketAddr, uint32_t packetSize, IopGuestExecutor &executor)
+    {
+        constexpr uint32_t kHeaderSize = 16u;
+        constexpr uint32_t kMaxPacketSize = 112u;
+        if (guestPacketAddr == 0u || packetSize < kHeaderSize || packetSize > kMaxPacketSize)
+            return false;
+
+        SifCmdHandler handler{};
+        const auto it = m_cmdHandlers.find(cid);
+        if (it != m_cmdHandlers.end() && it->second.function != 0u)
+        {
+            handler = it->second;
+        }
+        else if ((cid & 0x80000000u) != 0u)
+        {
+            const uint32_t idx = cid & 0x7FFFFFFFu;
+            if (m_sysCmdBuffer != 0u && idx < m_sysCmdBufferSize)
+            {
+                handler.function = m_memory.read32(m_sysCmdBuffer + idx * 8u);
+                handler.data = m_memory.read32(m_sysCmdBuffer + idx * 8u + 4u);
+            }
+        }
+        else if (m_cmdBuffer != 0u && cid < m_cmdBufferSize)
+        {
+            handler.function = m_memory.read32(m_cmdBuffer + cid * 8u);
+            handler.data = m_memory.read32(m_cmdBuffer + cid * 8u + 4u);
+        }
+
+        if (handler.function == 0u)
+            return false;
+
+        std::array<uint8_t, kMaxPacketSize> packet{};
+        if (!m_host.readGuest(guestPacketAddr, packet.data(), packetSize))
+            return false;
+
+        uint32_t sizeWord = 0u;
+        std::memcpy(&sizeWord, packet.data(), sizeof(sizeWord));
+        sizeWord = (sizeWord & 0xFFFFFF00u) | (packetSize & 0xFFu);
+        std::memcpy(packet.data() + 0u, &sizeWord, sizeof(sizeWord));
+        std::memcpy(packet.data() + 8u, &cid, sizeof(cid));
+
+        if (m_rxPacketBuffer == 0u)
+            m_rxPacketBuffer = m_memory.allocate(kMaxPacketSize, 16u);
+        if (m_rxPacketBuffer == 0u || !m_memory.writeRam(m_rxPacketBuffer, packet.data(), packetSize))
+            return false;
+
+        (void)executor.executeGuestFunction(handler.function, m_rxPacketBuffer, handler.data, 0u, 0u, handler.gp);
+        return true;
+    }
+
     void IopRpcBridge::onSifTransfer(const SifTransfer &transfer)
     {
         // The EE SIF transport owns the actual directional memory movement.
@@ -338,6 +480,14 @@ namespace ps2x::iop::detail
                 server = m_servers.erase(server);
             else
                 ++server;
+        }
+        for (auto cmd = m_cmdHandlers.begin(); cmd != m_cmdHandlers.end();)
+        {
+            const uint32_t function = IopMemory::physicalAddress(cmd->second.function);
+            if (function >= base && function < base + size)
+                cmd = m_cmdHandlers.erase(cmd);
+            else
+                ++cmd;
         }
     }
 
