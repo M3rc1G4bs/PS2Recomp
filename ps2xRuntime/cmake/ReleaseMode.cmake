@@ -10,8 +10,7 @@ function(EnableFastReleaseMode TargetName)
                 /O2 # speed
                 /Ob2 # inline aggressively
                 /Oi # intrinsics
-                /GL # whole program opt
-                /Gy # function-level linking
+                                /Gy # function-level linking
                 /Gw # global data in COMDAT
                 /GF # string pooling
                 /Zc:inline # remove unreferenced inline
@@ -26,17 +25,17 @@ function(EnableFastReleaseMode TargetName)
         if(TARGET ${TargetName})
             target_link_options(${TargetName} PRIVATE
                 $<$<CONFIG:Release>:
-                    /LTCG # link-time code generation
-                    /OPT:REF # remove unreferenced
+                                        /OPT:REF # remove unreferenced
                     /OPT:ICF # fold identical COMDATs
                 >
             )
         endif()
     endif()
 
-    if(IPO_SUPPORTED AND NOT PS2X_IS_VITA AND NOT PS2X_IS_SWITCH)
+    if(FALSE AND IPO_SUPPORTED AND NOT PS2X_IS_VITA AND NOT PS2X_IS_SWITCH)
         set_property(TARGET ${TargetName} PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
     else()
-        message(WARNING "Interprocedural optimization not supported: ${ipo_error}")
+        set_property(TARGET ${TargetName} PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE FALSE)
+        set_property(TARGET ${TargetName} PROPERTY INTERPROCEDURAL_OPTIMIZATION FALSE)
     endif()
 endfunction()

@@ -282,7 +282,7 @@ namespace ps2x::iop::detail
                 std::memcpy(&w14, packet.data() + 0x14u, 4);
                 std::memcpy(&w18, packet.data() + 0x18u, 4);
             }
-            if (iopCmdLogCount < 32 || (w14 != 0u && iopCmdLogCount < 256))
+            if (iopCmdLogCount < 32 || (w14 != 0u && iopCmdLogCount < 256) || commandId == 1u || commandId == 0u || commandId == 2u)
             {
                 std::fprintf(stderr, "[iop:sceSifSendCmd] cid=0x%x psize=0x%x extraSrc=0x%x extraDst=0x%x extraSize=0x%x reqId=0x%x w10=0x%x w14=0x%x w18=0x%x\n",
                              commandId, packetSize, extraSource, extraDestination, extraSize, reqId, w10, w14, w18);

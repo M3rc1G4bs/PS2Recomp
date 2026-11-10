@@ -361,10 +361,12 @@ bool PS2Memory::initialize(size_t ramSize)
         // memset zero-fills std::atomic<uint64_t>::csr's bytes, which is not itself
         // a guaranteed-valid atomic store; make the zero-initialization explicit.
         gs_regs.csr.store(0);
+        gs_regs.smode2 = 1ULL; // PS2 BIOS boot default: INT=1 (interlaced), FFMD=0 (field mode)
+        gs_regs.pmode = 0xFF61ULL; // PS2 BIOS boot default: EN1=1, EN2=0, MMOD=1, AMOD=1, ALP=0xFF
         gs_regs.dispfb1 = (0ULL << 0) | (10ULL << 9) | (0ULL << 15) | (0ULL << 32) | (0ULL << 43);
         gs_regs.display1 = (0ULL << 0) | (0ULL << 12) | (0ULL << 23) | (0ULL << 27) | (639ULL << 32) | (447ULL << 44);
-        gs_regs.dispfb2 = gs_regs.dispfb1;
-        gs_regs.display2 = gs_regs.display1;
+        gs_regs.dispfb2 = 0ULL;
+        gs_regs.display2 = 0ULL;
 
         // Allocate GS VRAM (4MB)
         m_gsVRAM = new uint8_t[PS2_GS_VRAM_SIZE];

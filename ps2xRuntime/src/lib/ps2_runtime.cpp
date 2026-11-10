@@ -390,19 +390,10 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
     static std::vector<uint8_t> s_uploadBuffer(DEFAULT_FB_SIZE, 0u);
 
     const uint64_t currentTick = rt->eeScheduler().currentVSyncTick();
-    const bool needsLatch = !s_hasLatchedInitialFrame || currentTick != s_lastPresentationTick;
-    if (needsLatch)
-    {
-        rt->gs().latchHostPresentationFrame();
-        s_lastPresentationTick = currentTick;
-        s_hasLatchedInitialFrame = true;
-    }
-    else if (s_hasUploadedFrame)
-    {
-        outWidth = (s_lastWidth != 0u) ? s_lastWidth : FB_WIDTH;
-        outHeight = (s_lastHeight != 0u) ? s_lastHeight : DEFAULT_DISPLAY_HEIGHT;
-        return;
-    }
+    static uint64_t s_presentationFrameCount = 0u;
+    ++s_presentationFrameCount;
+    rt->gs().latchHostPresentationFrame();
+    s_hasLatchedInitialFrame = true;
 
     s_scratch.clear();
     uint32_t width = 0u;
@@ -417,6 +408,19 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
                                                    &sourceFbp,
                                                    &usedPreferredDisplaySource))
     {
+        static uint64_t s_lastNoFrameLogTick = 0u;
+        if (currentTick >= s_lastNoFrameLogTick + 60u)
+        {
+            s_lastNoFrameLogTick = currentTick;
+            const GSRegisters &gs = rt->memory().gs();
+            std::cout << "[auto-verify:no-frame] tick=" << currentTick
+                      << " dispfb1=0x" << std::hex << gs.dispfb1
+                      << " display1=0x" << gs.display1
+                      << " dispfb2=0x" << gs.dispfb2
+                      << " display2=0x" << gs.display2
+                      << " pmode=0x" << gs.pmode << std::dec
+                      << std::endl;
+        }
         Image blank = GenImageColor(FB_WIDTH, FB_HEIGHT, MAGENTA);
         UpdateTexture(tex, blank.data);
         UnloadImage(blank);
@@ -478,6 +482,72 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
     outWidth = width;
     outHeight = height;
     s_hasUploadedFrame = true;
+
+#if !defined(PLATFORM_VITA) && !defined(PLATFORM_SWITCH) && !defined(__SWITCH__)
+    {
+        static uint64_t s_lastAutoVerifyTick = 0u;
+        static uint64_t s_lastAutoVerifyFrame = 0u;
+        static bool s_hadNonBlackFrame = false;
+        static uint32_t s_dumpIndex = 0u;
+
+        uint32_t nonBlackPixels = 0u;
+        uint32_t uniqueColorHash = 2166136261u;
+        const uint32_t *pixels = reinterpret_cast<const uint32_t *>(s_uploadBuffer.data());
+        const size_t totalPixels = s_uploadBuffer.size() / 4u;
+        for (size_t i = 0; i < totalPixels; i += 4u)
+        {
+            const uint32_t rgb = pixels[i] & 0x00FFFFFFu;
+            if (rgb != 0u)
+            {
+                ++nonBlackPixels;
+                uniqueColorHash = (uniqueColorHash ^ rgb) * 16777619u;
+            }
+        }
+
+        const bool firstNonBlack = (!s_hadNonBlackFrame && nonBlackPixels > 64u);
+        if (firstNonBlack)
+        {
+            s_hadNonBlackFrame = true;
+        }
+
+        const bool shouldCheck = firstNonBlack ||
+                                 (currentTick < 120u && (currentTick >= s_lastAutoVerifyTick + 10u)) ||
+                                 (currentTick >= s_lastAutoVerifyTick + 60u) ||
+                                 (s_presentationFrameCount >= s_lastAutoVerifyFrame + 60u);
+        if (shouldCheck)
+        {
+            s_lastAutoVerifyTick = currentTick;
+            s_lastAutoVerifyFrame = s_presentationFrameCount;
+            std::cout << "[auto-verify] tick=" << currentTick
+                      << " frame=" << s_presentationFrameCount
+                      << " size=" << width << "x" << height
+                      << " dispFbp=" << displayFbp
+                      << " srcFbp=" << sourceFbp
+                      << " nonBlackSampled=" << nonBlackPixels
+                      << " hash=0x" << std::hex << uniqueColorHash << std::dec
+                      << std::endl;
+
+            if (const char *dumpEnv = std::getenv("PS2X_DUMP_FRAMES"))
+            {
+                if (dumpEnv[0] != '\0' && dumpEnv[0] != '0')
+                {
+                    char filename[256];
+                    std::snprintf(filename, sizeof(filename), "D:/american_wasteland_recomp/logs/auto_frame_%04u_tick_%llu.png",
+                                  s_dumpIndex, static_cast<unsigned long long>(s_presentationFrameCount));
+                    Image img{};
+                    img.data = s_uploadBuffer.data();
+                    img.width = static_cast<int>(FB_WIDTH);
+                    img.height = static_cast<int>(FB_HEIGHT);
+                    img.mipmaps = 1;
+                    img.format = PIXELFORMAT_UNCOMPRESSED_R8G8B8A8;
+                    ExportImage(img, filename);
+                    std::cout << "[auto-verify:saved] " << filename << std::endl;
+                }
+                ++s_dumpIndex;
+            }
+        }
+    }
+#endif
 }
 
 PS2Runtime::PS2Runtime()
@@ -2343,6 +2413,8 @@ void PS2Runtime::HandleIntegerOverflow(R5900Context *ctx)
 
 void PS2Runtime::run()
 {
+    std::cout << std::unitbuf;
+    std::cerr << std::unitbuf;
     m_stopRequested.store(false, std::memory_order_relaxed);
     ps2_stubs::resetSifState();
     resetIop();
@@ -2390,51 +2462,48 @@ void PS2Runtime::run()
     uint64_t tick = 0;
     while (!isStopRequested() && !gameThreadFinished.load(std::memory_order_acquire))
     {
-        PS2_IF_AGRESSIVE_LOGS({
-            tick++;
-            if ((tick % 120) == 0)
+        tick++;
+        if ((tick % 120) == 0)
+        {
+            uint64_t curDma = m_memory.dmaStartCount();
+            uint64_t curGif = m_memory.gifCopyCount();
+            uint64_t curGs = m_memory.gsWriteCount();
+            uint64_t curVif = m_memory.vifWriteCount();
+            const GSRegisters &gs = m_memory.gs();
+            const uint32_t dbgPc = m_debugPc.load(std::memory_order_relaxed);
+            const uint32_t dbgRa = m_debugRa.load(std::memory_order_relaxed);
+            const uint32_t dbgSp = m_debugSp.load(std::memory_order_relaxed);
+            const uint32_t dbgGp = m_debugGp.load(std::memory_order_relaxed);
+            const auto eeSnapshot = m_eeScheduler->snapshot();
+            uint32_t s2Val = 0;
+            uint32_t w_1ffffa0 = 0;
+            if (uint8_t *r = m_memory.getRDRAM())
             {
-                uint64_t curDma = m_memory.dmaStartCount();
-                uint64_t curGif = m_memory.gifCopyCount();
-                uint64_t curGs = m_memory.gsWriteCount();
-                uint64_t curVif = m_memory.vifWriteCount();
-                const GSRegisters &gs = m_memory.gs();
-                const uint32_t dbgPc = m_debugPc.load(std::memory_order_relaxed);
-                const uint32_t dbgRa = m_debugRa.load(std::memory_order_relaxed);
-                const uint32_t dbgSp = m_debugSp.load(std::memory_order_relaxed);
-                const uint32_t dbgGp = m_debugGp.load(std::memory_order_relaxed);
-                const auto eeSnapshot = m_eeScheduler->snapshot();
-                uint32_t s2Val = 0;
-                uint32_t w_1ffffa0 = 0;
-                if (uint8_t *r = m_memory.getRDRAM())
-                {
-                    w_1ffffa0 = *reinterpret_cast<const uint32_t *>(r + 0x1ffffa0u);
-                }
-                if (R5900Context *curCtx = m_eeScheduler->currentContext())
-                {
-                    s2Val = static_cast<uint32_t>(_mm_extract_epi32(curCtx->r[18], 0));
-                }
-
-                RUNTIME_LOG("[run:tick] tick=" << tick
-                                               << " pc=0x" << std::hex << dbgPc
-                                               << " ra=0x" << dbgRa
-                                               << " sp=0x" << dbgSp
-                                               << " gp=0x" << dbgGp
-                                               << " s2=0x" << s2Val
-                                               << " w_1ffffa0=0x" << w_1ffffa0
-                                               << " dispfb1=0x" << gs.dispfb1
-                                               << " display1=0x" << gs.display1
-                                               << std::dec
-                                               << " eeCyc=" << eeSnapshot.eeCycle
-                                               << " activeThreads=" << eeSnapshot.threads.size()
-                                               << " dma=" << curDma
-                                               << " gif=" << curGif
-                                               << " gsw=" << curGs
-                                               << " vif=" << curVif
-                                               << std::endl);
-
+                w_1ffffa0 = *reinterpret_cast<const uint32_t *>(r + 0x1ffffa0u);
             }
-        });
+            if (R5900Context *curCtx = m_eeScheduler->currentContext())
+            {
+                s2Val = static_cast<uint32_t>(_mm_extract_epi32(curCtx->r[18], 0));
+            }
+
+            RUNTIME_LOG("[run:tick] tick=" << tick
+                                           << " pc=0x" << std::hex << dbgPc
+                                           << " ra=0x" << dbgRa
+                                           << " sp=0x" << dbgSp
+                                           << " gp=0x" << dbgGp
+                                           << " s2=0x" << s2Val
+                                           << " w_1ffffa0=0x" << w_1ffffa0
+                                           << " dispfb1=0x" << gs.dispfb1
+                                           << " display1=0x" << gs.display1
+                                           << std::dec
+                                           << " eeCyc=" << eeSnapshot.eeCycle
+                                           << " activeThreads=" << eeSnapshot.threads.size()
+                                           << " dma=" << curDma
+                                           << " gif=" << curGif
+                                           << " gsw=" << curGs
+                                           << " vif=" << curVif
+                                           << std::endl);
+        }
         uint32_t presentWidth = FB_WIDTH;
         uint32_t presentHeight = DEFAULT_DISPLAY_HEIGHT;
         UploadFrame(frameTex, this, presentWidth, presentHeight);
@@ -2460,6 +2529,22 @@ void PS2Runtime::run()
             m_debugUiDrawCallback(*this, m_debugUiUserData);
         }
         EndDrawing();
+
+#if !defined(PLATFORM_VITA) && !defined(PLATFORM_SWITCH) && !defined(__SWITCH__)
+        if ((tick % 120) == 0 && (std::getenv("PS2X_DUMP_FRAMES") != nullptr || std::getenv("PS2X_AUTO_VERIFY") != nullptr))
+        {
+            Image screenImg = LoadImageFromScreen();
+            if (screenImg.data != nullptr)
+            {
+                char pathBuf[256];
+                std::snprintf(pathBuf, sizeof(pathBuf),
+                              "D:/american_wasteland_recomp/logs/screen_tick_%llu.png",
+                              static_cast<unsigned long long>(tick));
+                ExportImage(screenImg, pathBuf);
+                UnloadImage(screenImg);
+            }
+        }
+#endif
 
         if (WindowShouldClose())
         {

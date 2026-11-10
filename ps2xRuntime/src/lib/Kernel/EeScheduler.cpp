@@ -760,6 +760,13 @@ int EeScheduler::rotateReadyQueue(int priority, bool interruptSafe)
         enqueueReady(*self);
         m_currentThreadId = 0;
         m_rescheduleRequested = true;
+        const uint64_t nextEventCycle = m_nextDeadlineCycle.load(std::memory_order_acquire);
+        if (nextEventCycle > m_eeCycle)
+        {
+            const uint64_t gap = nextEventCycle - m_eeCycle;
+            const uint32_t bump = static_cast<uint32_t>(std::min<uint64_t>(gap, 250000ull));
+            accountCycles(bump);
+        }
     }
     else
     {

@@ -238,13 +238,20 @@ namespace
         const bool textureHasAlpha = tex.tcc != 0u;
         TextureCombineResult out{tr, tg, tb, textureHasAlpha ? ta : va};
 
+        // If vertex color was not set (all zeroes in packed vertex stream),
+        // fallback to GS neutral modulation color (0x80 = 1.0f).
+        const uint8_t nvr = (vr == 0u && vg == 0u && vb == 0u) ? 0x80u : vr;
+        const uint8_t nvg = (vr == 0u && vg == 0u && vb == 0u) ? 0x80u : vg;
+        const uint8_t nvb = (vr == 0u && vg == 0u && vb == 0u) ? 0x80u : vb;
+        const uint8_t nva = (va == 0u && textureHasAlpha) ? 0x80u : va;
+
         switch (tex.tfx)
         {
         case 0: // MODULATE
-            out.r = clampU8((tr * vr) >> 7);
-            out.g = clampU8((tg * vg) >> 7);
-            out.b = clampU8((tb * vb) >> 7);
-            out.a = textureHasAlpha ? clampU8((ta * va) >> 7) : va;
+            out.r = clampU8((tr * nvr) >> 7);
+            out.g = clampU8((tg * nvg) >> 7);
+            out.b = clampU8((tb * nvb) >> 7);
+            out.a = textureHasAlpha ? clampU8((ta * nva) >> 7) : nva;
             break;
         case 1: // DECAL
             out.r = tr;
@@ -391,19 +398,22 @@ namespace
 
     GSSmode2State decodeSMode2(uint64_t smode2)
     {
+        if (smode2 == 0ull)
+            return {true, false}; // PS2 BIOS boot default: INT=1, FFMD=0
         return {(smode2 & 0x1ull) != 0ull, ((smode2 >> 1) & 0x1ull) != 0ull};
     }
 
-    void applyFieldPresentation(std::vector<uint8_t> &pixels, uint32_t width, uint32_t height, bool oddField)
+    void applyFieldPresentation(std::vector<uint8_t> &pixels, uint32_t width, uint32_t vramLines, uint32_t targetHeight, bool oddField)
     {
-        if (pixels.empty() || width == 0u || height < 2u)
+        (void)oddField;
+        if (pixels.empty() || width == 0u || vramLines == 0u || targetHeight < 2u)
             return;
         const std::vector<uint8_t> source = pixels;
-        for (uint32_t y = 0; y < height; ++y)
+        for (uint32_t y = 0; y < targetHeight; ++y)
         {
-            uint32_t sourceY = ((y >> 1u) << 1u) + (oddField ? 1u : 0u);
-            if (sourceY >= height)
-                sourceY = height - 1u;
+            uint32_t sourceY = (y * vramLines) / targetHeight;
+            if (sourceY >= vramLines)
+                sourceY = vramLines - 1u;
             std::memcpy(pixels.data() + y * kHostFrameWidth * 4u,
                         source.data() + sourceY * kHostFrameWidth * 4u,
                         width * 4u);
@@ -818,6 +828,8 @@ void GSCpuBackend::DrawPrimitive(const GSPrimitiveBatch &batch)
         }
     });
 
+
+
     switch (state.prim.type)
     {
     case GS_PRIM_SPRITE:
@@ -929,6 +941,8 @@ void GSCpuBackend::WritePixel(const GSDrawState &state, int x, int y, int z, uin
         break;
     }
 
+
+
     if (!zpass)
     {
         return;
@@ -1002,6 +1016,8 @@ void GSCpuBackend::WritePixel(const GSDrawState &state, int x, int y, int z, uin
         {
             pixel = Rgba8888ToRgba5551(pixel);
         }
+
+
 
         WriteVramUnlocked(fpsm, fbp, fbw, x, y, pixel);
     }
@@ -1089,6 +1105,7 @@ uint32_t GSCpuBackend::SampleTexture(const GSDrawState &state, float s, float t,
         sampleV = wrapTextureCoordinate(sampleV, texH, wrapV, minV, maxV);
 
         u32 out = ReadTextureVramUnlocked(tex.psm, tex.tbp0, tex.tbw, sampleU, sampleV);
+
 
         switch (tex.psm)
         {
@@ -1304,6 +1321,7 @@ void GSCpuBackend::DrawTriangle(const GSPrimitiveBatch &batch)
     maxY = clampInt(maxY, ctx.scissor.y0, ctx.scissor.y1);
 
     float denom = (fy1 - fy2) * (fx0 - fx2) + (fx2 - fx1) * (fy0 - fy2);
+
     if (std::fabs(denom) < 0.001f)
         return;
 
@@ -1368,6 +1386,7 @@ void GSCpuBackend::DrawTriangle(const GSPrimitiveBatch &batch)
                 }
 
                 uint32_t texel = SampleTexture(state, is, it, iq, iu, iv);
+
 
                 uint8_t tr = static_cast<uint8_t>(texel & 0xFF);
                 uint8_t tg = static_cast<uint8_t>((texel >> 8) & 0xFF);
@@ -1463,6 +1482,7 @@ void GSCpuBackend::DrawLine(const GSPrimitiveBatch &batch)
 void GSCpuBackend::BeginTransfer(const GSTransferCommand &command)
 {
     std::lock_guard<std::mutex> lock(m_mutex);
+
     m_transfer = command;
     m_transferState.x = command.trxpos.dsax;
     m_transferState.y = command.trxpos.dsay;
@@ -1872,7 +1892,24 @@ PresentationFrame GSCpuBackend::PresentFromLocalMemory(const GSPresentationReque
     decodeDisplaySize(request.display1, width1, height1);
     decodeDisplaySize(request.display2, width2, height2);
     const bool valid1 = pmode.enableCrt1 && hasDisplaySetup(request.display1, displayFrame1);
-    const bool valid2 = pmode.enableCrt2 && hasDisplaySetup(request.display2, displayFrame2);
+    const bool valid2 = pmode.enableCrt2 && hasDisplaySetup(request.display2, displayFrame2) && (displayFrame2.fbp != displayFrame1.fbp);
+    {
+        static uint64_t s_lastPresentLogTick = 0;
+        if (request.vsyncTick >= s_lastPresentLogTick + 60u)
+        {
+            s_lastPresentLogTick = request.vsyncTick;
+            std::cout << "[gs:present] tick=" << request.vsyncTick
+                      << " valid1=" << valid1 << " valid2=" << valid2
+                      << " pmode=0x" << std::hex << request.pmode
+                      << " smode2=0x" << request.smode2
+                      << " dispfb1=0x" << request.dispfb1 << std::dec
+                      << " fbp1=" << displayFrame1.fbp
+                      << " fbp2=" << displayFrame2.fbp
+                      << " ctx0fbp=" << request.contextFrames[0].fbp
+                      << " ctx1fbp=" << request.contextFrames[1].fbp
+                      << std::endl;
+        }
+    }
     if (!valid1 && !valid2)
         return result;
 
@@ -1899,20 +1936,34 @@ PresentationFrame GSCpuBackend::PresentFromLocalMemory(const GSPresentationReque
         if (pixels.empty() && !CopyFrameToHostRgba(displayFrame, width, height, pixels, preserveAlpha, true, true, origin.x, origin.y))
             return false;
 
-        if (!usedPreferred && displayFrame.fbp == 0u && countNonBlackPixels(pixels, width, height) == 0u)
+        if (!usedPreferred && countNonBlackPixels(pixels, width, height) == 0u)
         {
+            static uint32_t s_fallbackLogCount = 0;
             for (const GSFrameReg &candidate : request.contextFrames)
             {
                 if (candidate.fbp == selected.fbp && candidate.fbw == selected.fbw && candidate.psm == selected.psm)
                     continue;
                 std::vector<uint8_t> candidatePixels;
-                if (!CopyFrameToHostRgba(candidate, width, height, candidatePixels, preserveAlpha, true, true, 0u, 0u))
+                const bool copyOk = CopyFrameToHostRgba(candidate, width, height, candidatePixels, preserveAlpha, true, true, 0u, 0u);
+                const uint32_t candNonBlack = copyOk ? countNonBlackPixels(candidatePixels, width, height) : 0u;
+                if (++s_fallbackLogCount <= 20 || (s_fallbackLogCount % 100) == 0)
+                {
+                    std::cout << "[gs:fallback] candFbp=" << candidate.fbp
+                              << " fbw=" << candidate.fbw
+                              << " psm=" << static_cast<uint32_t>(candidate.psm)
+                              << " copyOk=" << copyOk
+                              << " nonBlack=" << candNonBlack
+                              << std::endl;
+                }
+                if (!copyOk)
                     continue;
-                if (countNonBlackPixels(candidatePixels, width, height) == 0u)
-                    continue;
-                selected = candidate;
-                pixels.swap(candidatePixels);
-                break;
+                if (candNonBlack > 0u || candidate.fbp == 0u)
+                {
+                    selected = candidate;
+                    pixels.swap(candidatePixels);
+                    if (candNonBlack > 0u)
+                        break;
+                }
             }
         }
         return true;
@@ -1923,11 +1974,19 @@ PresentationFrame GSCpuBackend::PresentFromLocalMemory(const GSPresentationReque
         GSFrameReg selected1{}, selected2{};
         std::vector<uint8_t> crt1, crt2;
         bool preferred1 = false, preferred2 = false;
-        if (copySource(displayFrame1, origin1, width1, height1, false, true, selected1, crt1, preferred1) &&
-            copySource(displayFrame2, origin2, width2, height2, false, true, selected2, crt2, preferred2))
+        const bool isFieldSized1 = fieldMode || (displayFrame1.fbp < 140u && height1 > 256u);
+        const bool isFieldSized2 = fieldMode || (displayFrame2.fbp < 140u && height2 > 256u);
+        const uint32_t vramH1 = isFieldSized1 ? ((height1 >= 256u) ? (height1 / 2u) : height1) : height1;
+        const uint32_t vramH2 = isFieldSized2 ? ((height2 >= 256u) ? (height2 / 2u) : height2) : height2;
+        const uint32_t targetH1 = isFieldSized1 ? ((height1 >= 256u) ? height1 : (height1 * 2u)) : height1;
+        const uint32_t targetH2 = isFieldSized2 ? ((height2 >= 256u) ? height2 : (height2 * 2u)) : height2;
+        if (copySource(displayFrame1, origin1, width1, vramH1, false, true, selected1, crt1, preferred1) &&
+            copySource(displayFrame2, origin2, width2, vramH2, false, true, selected2, crt2, preferred2))
         {
+            const uint32_t targetH = std::max(targetH1, targetH2);
+            const uint32_t vramH = std::max(vramH1, vramH2);
             result.width = std::max(width1, width2);
-            result.height = std::max(height1, height2);
+            result.height = targetH;
             result.pixels.assign(kHostFrameWidth * kHostFrameHeight * 4u, 0u);
             const uint8_t bgR = static_cast<uint8_t>(request.bgcolor);
             const uint8_t bgG = static_cast<uint8_t>(request.bgcolor >> 8u);
@@ -1942,22 +2001,23 @@ PresentationFrame GSCpuBackend::PresentFromLocalMemory(const GSPresentationReque
                     dst[3] = pmode.alp;
                 }
             if (!pmode.slbg)
-                for (uint32_t y = 0; y < height2; ++y)
+                for (uint32_t y = 0; y < vramH2; ++y)
                     std::memcpy(result.pixels.data() + y * kHostFrameWidth * 4u, crt2.data() + y * kHostFrameWidth * 4u, width2 * 4u);
-            for (uint32_t y = 0; y < height1; ++y)
+            for (uint32_t y = 0; y < vramH1; ++y)
                 for (uint32_t x = 0; x < width1; ++x)
                 {
                     const uint8_t *src = crt1.data() + (y * kHostFrameWidth + x) * 4u;
                     uint8_t *dst = result.pixels.data() + (y * kHostFrameWidth + x) * 4u;
-                    const uint32_t factor = pmode.mmod ? pmode.alp : std::min<uint32_t>(255u, static_cast<uint32_t>(src[3]) * 2u);
+                    const uint32_t factor = pmode.mmod ? pmode.alp : ((src[3] != 0u) ? std::min<uint32_t>(255u, static_cast<uint32_t>(src[3]) * 2u) : 255u);
                     dst[0] = blendPresentationChannel(src[0], dst[0], factor);
                     dst[1] = blendPresentationChannel(src[1], dst[1], factor);
                     dst[2] = blendPresentationChannel(src[2], dst[2], factor);
                     dst[3] = pmode.amod ? dst[3] : src[3];
                 }
+            normalizePresentationAlpha(result.pixels, result.width, vramH);
+            if (isFieldSized1 || isFieldSized2)
+                applyFieldPresentation(result.pixels, result.width, vramH, targetH, oddField);
             normalizePresentationAlpha(result.pixels, result.width, result.height);
-            if (fieldMode)
-                applyFieldPresentation(result.pixels, result.width, result.height, oddField);
             result.displayFbp = displayFrame1.fbp;
             result.sourceFbp = selected1.fbp;
             return result;
@@ -1966,13 +2026,18 @@ PresentationFrame GSCpuBackend::PresentFromLocalMemory(const GSPresentationReque
 
     const GSFrameReg &displayFrame = valid1 ? displayFrame1 : displayFrame2;
     const GSDisplayReadOrigin &origin = valid1 ? origin1 : origin2;
-    result.width = valid1 ? width1 : width2;
-    result.height = valid1 ? height1 : height2;
+    const uint32_t rawWidth = valid1 ? width1 : width2;
+    const uint32_t rawHeight = valid1 ? height1 : height2;
+    const bool isFieldSizedBuffer = fieldMode || (displayFrame.fbp < 140u && rawHeight > 256u);
+    const uint32_t vramH = isFieldSizedBuffer ? ((rawHeight >= 256u) ? (rawHeight / 2u) : rawHeight) : rawHeight;
+    const uint32_t targetH = isFieldSizedBuffer ? ((rawHeight >= 256u) ? rawHeight : (rawHeight * 2u)) : rawHeight;
+    result.width = rawWidth;
+    result.height = targetH;
     GSFrameReg selected = displayFrame;
-    if (!copySource(displayFrame, origin, result.width, result.height, true, false, selected, result.pixels, result.usedPreferred))
+    if (!copySource(displayFrame, origin, result.width, vramH, true, false, selected, result.pixels, result.usedPreferred))
         return {};
-    if (fieldMode)
-        applyFieldPresentation(result.pixels, result.width, result.height, oddField);
+    if (isFieldSizedBuffer)
+        applyFieldPresentation(result.pixels, result.width, vramH, targetH, oddField);
     normalizePresentationAlpha(result.pixels, result.width, result.height);
     result.displayFbp = displayFrame.fbp;
     result.sourceFbp = selected.fbp;

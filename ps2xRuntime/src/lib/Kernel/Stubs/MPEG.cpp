@@ -1089,6 +1089,7 @@ namespace ps2_stubs
             if (containsMpegSequenceEnd(data, size))
             {
                 playback.sawSequenceEnd = true;
+                playback.streamEnded = true;
                 playback.cdStreamGeneration = g_mpeg_stub_state.cdStreamGeneration;
             }
 
@@ -1692,54 +1693,43 @@ namespace ps2_stubs
             {
                 return;
             }
-
-            const uint32_t width = static_cast<uint32_t>(frame.width);
-            const uint32_t height = static_cast<uint32_t>(frame.height);
-            const uint32_t outWidth = align16(width);
-            const uint32_t outHeight = align16(height);
-            const uint32_t macroblockColumns = outWidth / 16u;
-
-            for (uint32_t mbx = 0u; mbx < macroblockColumns; ++mbx)
+            const uint32_t w0 = static_cast<uint32_t>(frame.width);
+            const uint32_t h0 = static_cast<uint32_t>(frame.height);
+            const uint32_t mbCols = align16(w0) / 16u;
+            const uint32_t mbRows = align16(h0) / 16u;
+            for (uint32_t mbx = 0u; mbx < mbCols; ++mbx)
             {
-                const size_t stripOffset =
-                    static_cast<size_t>(mbx) * static_cast<size_t>(outHeight) * 16u * 4u;
-                for (uint32_t y = 0u; y < outHeight; ++y)
+                for (uint32_t mby = 0u; mby < mbRows; ++mby)
                 {
-                    uint8_t *dst = getMemPtr(
-                        rdram,
-                        destAddr + static_cast<uint32_t>(stripOffset + static_cast<size_t>(y) * 16u * 4u));
-                    if (!dst)
+                    const size_t mbOff = (static_cast<size_t>(mbx) * mbRows + mby) * 1024u;
+                    for (uint32_t by = 0u; by < 16u; ++by)
                     {
-                        continue;
-                    }
-
-                    for (uint32_t x = 0u; x < 16u; ++x)
-                    {
-                        const uint32_t srcX = mbx * 16u + x;
-                        const uint8_t *src = nullptr;
-                        if (srcX < width && y < height)
+                        const uint32_t y = mby * 16u + by;
+                        uint8_t *dst = getMemPtr(rdram, destAddr + static_cast<uint32_t>(mbOff + by * 64u));
+                        if (!dst) continue;
+                        for (uint32_t x = 0u; x < 16u; ++x)
                         {
-                            src = frame.rgba.data() +
-                                  (static_cast<size_t>(y) * static_cast<size_t>(width) + srcX) * 4u;
-                        }
-
-                        if (src)
-                        {
-                            dst[x * 4u + 0u] = src[0u];
-                            dst[x * 4u + 1u] = src[1u];
-                            dst[x * 4u + 2u] = src[2u];
-                            dst[x * 4u + 3u] = 0x80u;
-                        }
-                        else
-                        {
-                            dst[x * 4u + 0u] = 0u;
-                            dst[x * 4u + 1u] = 0u;
-                            dst[x * 4u + 2u] = 0u;
-                            dst[x * 4u + 3u] = 0x80u;
+                            const uint32_t srcX = mbx * 16u + x;
+                            if (srcX < w0 && y < h0)
+                            {
+                                const uint8_t *src = frame.rgba.data() + (static_cast<size_t>(y) * w0 + srcX) * 4u;
+                                dst[x * 4u + 0u] = src[0u];
+                                dst[x * 4u + 1u] = src[1u];
+                                dst[x * 4u + 2u] = src[2u];
+                                dst[x * 4u + 3u] = 0x80u;
+                            }
+                            else
+                            {
+                                dst[x * 4u + 0u] = 0u;
+                                dst[x * 4u + 1u] = 0u;
+                                dst[x * 4u + 2u] = 0u;
+                                dst[x * 4u + 3u] = 0x80u;
+                            }
                         }
                     }
                 }
             }
+            return;
         }
 
         void resetMpegStubStateUnlocked()
@@ -2295,6 +2285,7 @@ namespace ps2_stubs
             if (playback.decodedFrames.empty() &&
                 !g_mpeg_stub_state.currentCdStreamEofSeen &&
                 !playback.streamEnded &&
+                !playback.sawSequenceEnd &&
                 !playback.decoderFailed)
             {
                 if (g_mpeg_stub_state.getPictureWaitTraceCount < 32u)
@@ -2461,8 +2452,8 @@ namespace ps2_stubs
         const bool producerEnded =
             g_mpeg_stub_state.currentCdStreamEofSeen &&
             playback.cdStreamGeneration == g_mpeg_stub_state.cdStreamGeneration;
-        const bool ended = producerEnded &&
-                           (playback.streamEnded || (playback.decoderFailed && playback.sawInput));
+        const bool ended = playback.streamEnded || playback.sawSequenceEnd ||
+                           (producerEnded && (playback.decoderFailed && playback.sawInput));
         const uint64_t presentationEnd = playback.presentationEndTickQ32;
         const uint64_t currentTickQ32 = runtime != nullptr
                                             ? (runtime->eeScheduler().currentVSyncTick() << 32u)

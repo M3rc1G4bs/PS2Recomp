@@ -1005,21 +1005,24 @@ namespace ps2_syscalls
         }
 
         static int logCount = 0;
-        if (logCount < 64)
+        if (logCount < 64 || cid == 1u || cid == 0u || cid == 2u)
         {
             const uint8_t *pkt = getConstMemPtr(rdram, packetAddr);
             uint32_t cmd = 0, reqId = 0, w10 = 0, w14 = 0, w18 = 0, w1C = 0, w20 = 0;
             uint8_t b6A = 0;
-            if (pkt && packetSize >= 0x70)
+            if (pkt && packetSize >= 0x20)
             {
                 std::memcpy(&reqId, pkt + 0x0C, 4);
                 std::memcpy(&w10, pkt + 0x10, 4);
                 std::memcpy(&w14, pkt + 0x14, 4);
                 std::memcpy(&w18, pkt + 0x18, 4);
                 std::memcpy(&w1C, pkt + 0x1C, 4);
-                std::memcpy(&w20, pkt + 0x20, 4);
-                std::memcpy(&cmd, pkt + 0x6C, 4);
-                b6A = pkt[0x6A];
+                if (packetSize >= 0x70)
+                {
+                    std::memcpy(&w20, pkt + 0x20, 4);
+                    std::memcpy(&cmd, pkt + 0x6C, 4);
+                    b6A = pkt[0x6A];
+                }
             }
             RUNTIME_LOG("[sceSifSendCmd] cid=0x" << std::hex << cid
                                                  << " packet=0x" << packetAddr

@@ -166,6 +166,21 @@ namespace
 
 int main(int argc, char *argv[])
 {
+#if defined(PLATFORM_SWITCH) || defined(__SWITCH__)
+    if (argc >= 1 && argv[0] && argv[0][0] != '\0')
+    {
+        std::error_code ec;
+        std::filesystem::path appDir = std::filesystem::path(argv[0]).parent_path();
+        if (!appDir.empty() && std::filesystem::exists(appDir, ec))
+        {
+            std::filesystem::current_path(appDir, ec);
+        }
+    }
+    freopen("thaw_switch.log", "w", stdout);
+    freopen("thaw_switch.log", "a", stderr);
+    setvbuf(stdout, NULL, _IONBF, 0);
+    setvbuf(stderr, NULL, _IONBF, 0);
+#endif
 #if defined(__ANDROID__)
     redirectStdioToLogcat();
 #endif

@@ -158,6 +158,7 @@ namespace ps2_stubs
             }
 
             writePacketBuilderCurrent(rdram, runtime, stateAddr, currentAddr);
+            refreshPacketBuilderPendingCount(rdram, runtime, stateAddr);
             writeGuestBytes(rdram,
                             runtime,
                             stateAddr + 8u,
@@ -259,7 +260,6 @@ namespace ps2_stubs
         void writePacketBuilderCurrent(uint8_t *rdram, PS2Runtime *runtime, uint32_t stateAddr, uint32_t currentAddr)
         {
             writeGuestU32(rdram, runtime, stateAddr, currentAddr);
-            refreshPacketBuilderPendingCount(rdram, runtime, stateAddr);
         }
 
         uint32_t reservePacketBuilderWords(uint8_t *rdram, PS2Runtime *runtime, uint32_t stateAddr, uint32_t wordCount)

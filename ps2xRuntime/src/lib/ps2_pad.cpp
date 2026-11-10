@@ -1,5 +1,6 @@
 #include "runtime/ps2_pad.h"
 #include "ps2_host_backend.h"
+#include <cstdlib>
 #include <cstring>
 
 namespace
@@ -117,6 +118,23 @@ bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t s
             clearBit(PAD_START);
         if (IsKeyDown(KEY_TAB))
             clearBit(PAD_SELECT);
+    }
+
+    if (const char *autoEnv = std::getenv("PS2X_AUTO_INPUT"))
+    {
+        if (autoEnv[0] != '\0' && autoEnv[0] != '0')
+        {
+            static uint32_t s_padPollCount = 0u;
+            ++s_padPollCount;
+            if ((s_padPollCount % 120u) >= 60u && (s_padPollCount % 120u) < 66u)
+            {
+                clearBit(PAD_START);
+            }
+            else if ((s_padPollCount % 120u) >= 90u && (s_padPollCount % 120u) < 96u)
+            {
+                clearBit(PAD_CROSS);
+            }
+        }
     }
 
     data[2] = static_cast<uint8_t>(btns & 0xFF);

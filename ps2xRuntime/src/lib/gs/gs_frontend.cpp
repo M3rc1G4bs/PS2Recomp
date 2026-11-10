@@ -1680,7 +1680,19 @@ GSPrimitiveBatch GS::buildDrawBatch(int vertexCount) const
     GSPrimitiveBatch batch{};
     batch.vertexCount = static_cast<uint8_t>(std::min(vertexCount, 3));
     for (int i = 0; i < batch.vertexCount; ++i)
+    {
         batch.vertices[static_cast<size_t>(i)] = m_vtxQueue[i];
+        // Ensure neutral GS vertex modulation color if vertices carried all zeroes
+        if (batch.vertices[static_cast<size_t>(i)].r == 0u &&
+            batch.vertices[static_cast<size_t>(i)].g == 0u &&
+            batch.vertices[static_cast<size_t>(i)].b == 0u)
+        {
+            batch.vertices[static_cast<size_t>(i)].r = 0x80u;
+            batch.vertices[static_cast<size_t>(i)].g = 0x80u;
+            batch.vertices[static_cast<size_t>(i)].b = 0x80u;
+            batch.vertices[static_cast<size_t>(i)].a = 0x80u;
+        }
+    }
     batch.state.context = m_ctx[m_prim.ctxt ? 1 : 0];
     batch.state.prim = m_prim;
     batch.state.texa = m_texa;

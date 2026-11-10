@@ -60,18 +60,16 @@ namespace ps2x::iop::detail
 
     uint32_t IopTimrman::timerId(size_t index) noexcept
     {
-        return (static_cast<uint32_t>(index + 1u) << 28u) | (kAddresses[index] >> 4u);
+        return static_cast<uint32_t>(index + 1u);
     }
 
     IopTimrman::Timer *IopTimrman::timerFromId(uint32_t id) noexcept
     {
-        const uint32_t encoded = id >> 28u;
+        const uint32_t encoded = (id >> 28u) != 0u ? (id >> 28u) : id;
         if (encoded == 0u || encoded > m_timers.size())
             return nullptr;
         Timer &timer = m_timers[encoded - 1u];
-        return timer.users != 0u && (id & 0x0FFFFFFFu) == (timer.address >> 4u)
-                   ? &timer
-                   : nullptr;
+        return timer.users != 0u ? &timer : nullptr;
     }
 
     const IopTimrman::Timer *IopTimrman::timerFromId(uint32_t id) const noexcept

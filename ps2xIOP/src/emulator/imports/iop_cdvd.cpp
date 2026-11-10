@@ -232,7 +232,7 @@ namespace ps2x::iop::detail
             {
                 const bool ok = readSectors(a0, a1, a2);
                 static int cdReadLogCount = 0;
-                if (cdReadLogCount < 64)
+                if (cdReadLogCount < 64 || !ok)
                 {
                     uint32_t w0 = 0, w1 = 0;
                     if (ok && a1 > 0 && memory.ownsRamRange(a2, 8))
@@ -697,8 +697,11 @@ namespace ps2x::iop::detail
                 return true;
             }
             const uint64_t byteCount64 = static_cast<uint64_t>(sectors) * kSectorSize;
-            if (byteCount64 > IopMemory::RamSize || !memory.ownsRamRange(destination, static_cast<size_t>(byteCount64)))
+            const uint32_t physDest = IopMemory::physicalAddress(destination);
+            if (byteCount64 > IopMemory::RamSize || physDest > IopMemory::RamSize || byteCount64 > IopMemory::RamSize - physDest)
             {
+                std::fprintf(stderr, "[iop:sceCdRead:range-fail] dst=0x%x phys=0x%x bytes=0x%llx\n",
+                             destination, physDest, static_cast<unsigned long long>(byteCount64));
                 lastError = kCdvdErrorRead;
                 return false;
             }
@@ -730,6 +733,7 @@ namespace ps2x::iop::detail
                 {
                     if (!readVirtualSector(lsn + sector, bytes.data() + static_cast<size_t>(sector) * kSectorSize))
                     {
+                        std::fprintf(stderr, "[iop:sceCdRead:virtual-fail] lsn=0x%x sector=%u\n", lsn, sector);
                         read = false;
                         break;
                     }
@@ -738,6 +742,7 @@ namespace ps2x::iop::detail
 
             if (!read || !memory.writeRam(destination, bytes.data(), bytes.size()))
             {
+                std::fprintf(stderr, "[iop:sceCdRead:write-fail] dst=0x%x read=%d\n", destination, read ? 1 : 0);
                 lastError = kCdvdErrorRead;
                 return false;
             }

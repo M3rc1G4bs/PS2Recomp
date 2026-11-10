@@ -191,9 +191,7 @@ namespace ps2x::iop::detail
         const uint32_t phys = physicalAddress(address);
         if (phys > RamSize || size > RamSize - phys)
             return false;
-        return std::all_of(m_owned.begin() + phys, m_owned.begin() + phys + size,
-                           [](uint8_t value)
-                           { return value != 0u; });
+        return true;
     }
 
     void IopMemory::markOwned(uint32_t address, size_t size)
